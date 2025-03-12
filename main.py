@@ -1,16 +1,33 @@
 import requests
 from bs4 import BeautifulSoup
 import sys
+import os
 from typing import Dict, List, Optional
+import re
+from datetime import datetime
 
 class MedlinePlusScraper:
     """Class to handle scraping of MedlinePlus encyclopedia articles."""
     
     BASE_URL = "https://medlineplus.gov/ency/"
     
-    def __init__(self):
-        """Initialize the scraper with session for connection reuse."""
+    def __init__(self, output_dir="medlineplus_diseases"):
+        """
+        Initialize the scraper with session for connection reuse.
+        
+        Args:
+            output_dir: Directory to save the disease text files
+        """
         self.session = requests.Session()
+        self.output_dir = output_dir
+        
+        # Create output directory if it doesn't exist
+        try:
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+                print(f"Created output directory: {output_dir}")
+        except Exception as e:
+            print(f"Error creating output directory: {e}")
     
     def retrieve_webpage(self, url: str) -> Optional[str]:
         """
@@ -64,6 +81,64 @@ class MedlinePlusScraper:
             print(f"Error parsing article content: {e}")
             return {"Error": f"Failed to parse content: {str(e)}"}
     
+    def create_safe_filename(self, title: str) -> str:
+        """
+        Create a safe filename from the article title.
+        
+        Args:
+            title: The article title
+            
+        Returns:
+            A safe filename without invalid characters
+        """
+        # Remove invalid filename characters
+        safe_title = re.sub(r'[\\/*?:"<>|]', "", title)
+        # Replace spaces and multiple non-alphanumeric chars with underscore
+        safe_title = re.sub(r'\s+', "_", safe_title)
+        safe_title = re.sub(r'[^a-zA-Z0-9_.-]', "", safe_title)
+        
+        # Add timestamp to ensure uniqueness
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Truncate if filename is too long (Windows has 260 char path limit)
+        max_length = 200  # Leave room for directory, extension, and timestamp
+        if len(safe_title) > max_length:
+            safe_title = safe_title[:max_length]
+            
+        return f"{safe_title}_{timestamp}.txt"
+    
+    def save_to_file(self, content: Dict[str, str], url: str) -> str:
+        """
+        Save the extracted content to a text file.
+        
+        Args:
+            content: Dictionary with article sections and their content
+            url: Source URL of the content
+            
+        Returns:
+            Path to the saved file or error message
+        """
+        try:
+            title = content.get("Title", "Unknown_Disease")
+            filename = self.create_safe_filename(title)
+            filepath = os.path.join(self.output_dir, filename)
+            
+            with open(filepath, 'w', encoding='utf-8') as file:
+                file.write(f"Source: {url}\n")
+                file.write(f"Extracted: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+                
+                # Write each section
+                for section, text in content.items():
+                    
+                    file.write(f"{section}\n")
+                
+                    file.write(f"{text}\n\n")
+            
+            return filepath
+        except Exception as e:
+            print(f"Error saving file: {e}")
+            return f"Error: {str(e)}"
+    
     def find_encyclopedia_articles(self, letter: str) -> List[str]:
         """
         Find all article links for a given letter in the encyclopedia.
@@ -101,9 +176,9 @@ class MedlinePlusScraper:
             print(f"Error finding articles: {e}")
             return []
     
-    def scrape_and_display_articles(self, letter: str) -> None:
+    def scrape_and_save_articles(self, letter: str) -> None:
         """
-        Main function to scrape and display articles for a given letter.
+        Main function to scrape articles for a given letter and save to files.
         
         Args:
             letter: Single letter to retrieve articles for
@@ -116,17 +191,27 @@ class MedlinePlusScraper:
                 return
             
             print(f"Found {len(article_links)} articles for letter '{letter}'.")
+            successful_saves = 0
             
             for link in article_links:
-                print(f"\nExtracting from: {link}")
+                print(f"\nProcessing: {link}")
                 html = self.retrieve_webpage(link)
                 
                 if html:
                     extracted_text = self.parse_article_content(html)
-                    for section, text in extracted_text.items():
-                        print(f"\n{section}:\n{text}")
+                    
+                    # Save to file
+                    saved_path = self.save_to_file(extracted_text, link)
+                    if not saved_path.startswith("Error"):
+                        print(f"✓ Saved to: {os.path.basename(saved_path)}")
+                        successful_saves += 1
+                    else:
+                        print(f"✗ Failed to save: {saved_path}")
                 else:
-                    print(f"Could not retrieve content from {link}")
+                    print(f"✗ Could not retrieve content from {link}")
+            
+            print(f"\nSummary: Successfully saved {successful_saves} out of {len(article_links)} articles.")
+            print(f"Files are located in: {os.path.abspath(self.output_dir)}")
                     
         except Exception as e:
             print(f"An unexpected error occurred: {e}")
@@ -135,9 +220,13 @@ class MedlinePlusScraper:
 def main():
     """Main entry point of the application."""
     try:
-        scraper = MedlinePlusScraper()
+        # Ask user for output directory or use default
+        custom_dir = input("Enter output directory name (or press Enter for default 'medlineplus_diseases'): ").strip()
+        output_dir = custom_dir if custom_dir else "medlineplus_diseases"
+        
+        scraper = MedlinePlusScraper(output_dir=output_dir)
         letter = input("Enter a letter to retrieve articles (A-Z): ").strip()
-        scraper.scrape_and_display_articles(letter)
+        scraper.scrape_and_save_articles(letter)
     except KeyboardInterrupt:
         print("\nOperation cancelled by user.")
         sys.exit(0)
